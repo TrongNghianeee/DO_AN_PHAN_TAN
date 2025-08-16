@@ -1,0 +1,68 @@
+3. Phần Lý Thuyết (Dàn Ý Cho Báo Cáo 3-4 Trang)
+
+Định nghĩa và phân loại consistency:
+
+Strong consistency: Mọi read thấy update mới nhất ngay lập tức (ví dụ: ACID transactions). Ưu: No anomalies. Nhược: High latency, low availability (CAP theorem).
+Eventual consistency: Data cuối cùng hội tụ, nhưng có thể temporarily inconsistent (ví dụ: DNS, NoSQL like Cassandra). Ưu: High availability, scalability. Nhược: Stale reads.
+Phân loại: Causal, Session, Monotonic Read/Write.
+
+
+Kiến trúc replication PostgreSQL:
+
+Streaming replication: Physical copy, synchronous (strong) or async (eventual if delay).
+Logical replication: WAL-based, publish-subscribe, async → eventual.
+Pglogical: Extension cho logical, hỗ trợ selective replication.
+Multi-master (BDR or pglogical): Cả replicas writable, eventual consistency với conflict resolution.
+
+
+Mô hình lazy replication và convergence:
+
+Lazy: Updates propagate async (sau commit), dẫn đến eventual. Convergence: Data hội tụ qua merge (ví dụ: last-write-wins).
+Cơ chế: Pull-based (replica poll master) hoặc push-based (master send changes).
+
+
+So sánh cơ chế resolution conflict:
+
+Last-write-wins: Dựa timestamp, đơn giản nhưng mất data.
+Version vectors: Theo dõi versions, merge manual.
+CRDTs: Auto-merge without loss (nhưng phức tạp).
+PostgreSQL: Sử dụng triggers hoặc extensions như pglogical cho custom resolution.
+
+
+
+4. Phần Thực Hành (Demo, Dàn Ý Cho 3-4 Trang)
+
+Dựa trên "Replica Consistency" (giả sử bài này về general replica mgmt): Thiết kế process đồng bộ:
+
+Setup: PostgreSQL logical replication async giữa 5432 → 5433/5434.
+Đồng bộ: Trigger on registrations table để propagate changes.
+Kiểm tra convergence: Insert registration từ 5433, check delay trên 5434 (query until match).
+
+
+Dựa trên "Real-Time Eventual Consistency" (giả sử về low-latency sync): Gợi ý sync tự động:
+
+Sử dụng Flask API với webhook: Khi register course, API post event đến RabbitMQ/Kafka, replicas subscribe và update.
+Đo độ trễ: Timestamp insert, query replicas, tính avg latency (ms). Demo code: Flask endpoint /register, measure time to converge.
+
+
+Code Demo (SQL + Flask):
+
+SQL tạo DB: (Mẫu cho master)
+sqlCREATE TABLE students (stno SERIAL PRIMARY KEY, u_id INT, fname VARCHAR(30));
+CREATE TABLE registrations (reg_id SERIAL PRIMARY KEY, stno INT REFERENCES students, sec_no INT);
+-- Replication: CREATE PUBLICATION mypub FOR TABLE registrations;
+
+Flask API (phân tán instances connect different DBs):
+pythonfrom flask import Flask, request
+app = Flask(__name__)
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.json  # {stno: 1, sec_no: 101}
+    # Insert to local DB (e.g., connect to 5433)
+    # Send event to queue for sync
+    return {'status': 'success'}
+
+Đo convergence: Script Python query both replicas, tính time diff.
+
+
+Kết quả demo: Graphs như Fig. 5-7 PDF (response time thấp hơn ở distributed).
