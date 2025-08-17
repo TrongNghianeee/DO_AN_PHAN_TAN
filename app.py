@@ -226,37 +226,68 @@ def register():
             except Exception:
                 pass
             
-# Endpoint trả về toàn bộ danh sách đăng ký trên DB gốc kèm theo độ trễ đồng bộ.
+"""Legacy endpoint: basic list (will use real reg_id now)."""
 @app.route('/list', methods=['GET'])
-def list_registrations():
-    conn = get_db_conn(5432)  # Master DB
+def list_registrations_basic():
+    conn = get_db_conn(5432)
     cur = conn.cursor()
-    # use a generated row number as reg_id because the registrations table may not have an "id" column
     cur.execute("""
-        SELECT
-            row_number() OVER () AS reg_id,
-            stno,
-            sec_no,
-            created_at,
-            synced_at,
-            (synced_at - created_at) AS latency
-        FROM registrations;
+        SELECT reg_id, stno, sec_no, created_at, synced_at, (synced_at - created_at) AS latency
+        FROM registrations ORDER BY reg_id DESC
     """)
     rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    result = []
-    for r in rows:
-        result.append({
+    cur.close(); conn.close()
+    return jsonify([
+        {
             'id': r[0],
             'stno': r[1],
             'sec_no': r[2],
             'created_at': str(r[3]),
             'synced_at': str(r[4]) if r[4] else None,
             'latency': str(r[5]) if r[5] else None
+        } for r in rows
+    ])
+
+# Endpoint chi tiết hơn: trả về danh sách đăng ký kèm tên sinh viên, shard, thông tin course/term
+@app.route('/registrations', methods=['GET'])
+def registrations_enriched():
+    conn = get_db_conn(5432)
+    cur = conn.cursor()
+    # Lấy shard_name (nếu có) thông qua students_map; lấy tên course qua sections -> courses
+    cur.execute("""
+        SELECT r.reg_id,
+               r.stno AS master_stno,
+               sm.fname, sm.mname, sm.lname,
+               (SELECT shard_name FROM students_map m WHERE m.master_stno = sm.master_stno LIMIT 1) AS shard_name,
+               r.sec_no AS master_sec_no,
+               s.year, s.semester, s.c_no, c.c_name,
+               r.created_at, r.synced_at, (r.synced_at - r.created_at) AS latency
+        FROM registrations r
+        LEFT JOIN students_master sm ON r.stno = sm.master_stno
+        LEFT JOIN sections s ON r.sec_no = s.sec_no
+        LEFT JOIN courses c ON s.c_no = c.c_no
+        ORDER BY r.reg_id DESC
+    """)
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    out = []
+    for r in rows:
+        full = " ".join([p for p in [r[2], r[3], r[4]] if p]).strip() or None
+        out.append({
+            'reg_id': r[0],
+            'master_stno': r[1],
+            'student_name': full,
+            'shard': r[5],
+            'master_sec_no': r[6],
+            'year': r[7],
+            'semester': r[8],
+            'course_no': r[9],
+            'course_name': r[10],
+            'created_at': str(r[11]),
+            'synced_at': str(r[12]) if r[12] else None,
+            'latency': str(r[13]) if r[13] else None
         })
-    return jsonify(result)
+    return jsonify(out)
 
 
 # Endpoint: autocomplete/search students
@@ -361,6 +392,7 @@ def available_sections(stno):
             cur.close(); conn.close()
         except Exception:
             pass
+
 
  # Manual sync endpoint (POST /sync) to trigger mapping-based registration sync
 @app.route('/sync', methods=['POST'])

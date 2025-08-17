@@ -30,15 +30,18 @@
         </form>
 
         <div class="mt-4">
-            <h3>Danh sách đăng ký (từ Master DB)</h3>
+            <h3>Danh sách đăng ký (Master DB)</h3>
             <table class="table table-bordered" id="regTable">
                 <thead>
                     <tr>
-                        <th>ID</th>
+                        <th>Reg ID</th>
                         <th>Student</th>
+                        <th>Shard</th>
                         <th>Section</th>
-                        <th>Created At</th>
-                        <th>Synced At</th>
+                        <th>Course</th>
+                        <th>Term</th>
+                        <th>Created</th>
+                        <th>Synced</th>
                         <th>Latency</th>
                     </tr>
                 </thead>
@@ -68,21 +71,22 @@
 
         // Lấy danh sách từ API /list
         document.getElementById('btnList').addEventListener('click', async () => {
-            const res = await fetch('/list');
+            const res = await fetch('/registrations');
             const rows = await res.json();
-
             const tbody = document.querySelector('#regTable tbody');
-            tbody.innerHTML = "";
+            tbody.innerHTML = '';
             rows.forEach(r => {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td>${r.id}</td>
-                    <td>${r.stno}</td>
-                    <td>${r.sec_no}</td>
+                    <td>${r.reg_id}</td>
+                    <td>${r.student_name || r.master_stno}</td>
+                    <td>${r.shard || ''}</td>
+                    <td>${r.master_sec_no}</td>
+                    <td>${r.course_no} - ${r.course_name || ''}</td>
+                    <td>${r.year} ${r.semester}</td>
                     <td>${r.created_at}</td>
                     <td>${r.synced_at || ''}</td>
-                    <td>${r.latency || ''}</td>
-                `;
+                    <td>${r.latency || ''}</td>`;
                 tbody.appendChild(tr);
             });
         });

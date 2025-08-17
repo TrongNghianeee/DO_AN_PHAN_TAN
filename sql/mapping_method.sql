@@ -201,6 +201,7 @@ CREATE OR REPLACE FUNCTION sync_registrations_remapped() RETURNS INTEGER AS $$
 DECLARE
   inserted_cnt INTEGER := 0;
   rcount INTEGER;
+  sync_ts TIMESTAMP := clock_timestamp(); -- một mốc thời gian thống nhất cho lần sync này
 BEGIN
   -- Đảm bảo sinh mapping trước
   PERFORM sync_students_from_shard('5433');
@@ -209,8 +210,8 @@ BEGIN
   PERFORM sync_sections_from_shard('5434');
 
   -- 5433
-  INSERT INTO registrations (stno, sec_no, created_at, mark)
-  SELECT sm.master_stno, secmap.master_sec_no, r.created_at, r.mark
+  INSERT INTO registrations (stno, sec_no, created_at, mark, synced_at)
+  SELECT sm.master_stno, secmap.master_sec_no, r.created_at, r.mark, sync_ts
   FROM registrations_5433 r
   JOIN students_map sm ON sm.shard_name='5433' AND sm.shard_stno = r.stno
   JOIN sections_map secmap ON secmap.shard_name='5433' AND secmap.shard_sec_no = r.sec_no
@@ -222,8 +223,8 @@ BEGIN
   UPDATE registrations_5433 SET synced_at = now() WHERE synced_at IS NULL;
 
   -- 5434
-  INSERT INTO registrations (stno, sec_no, created_at, mark)
-  SELECT sm.master_stno, secmap.master_sec_no, r.created_at, r.mark
+  INSERT INTO registrations (stno, sec_no, created_at, mark, synced_at)
+  SELECT sm.master_stno, secmap.master_sec_no, r.created_at, r.mark, sync_ts
   FROM registrations_5434 r
   JOIN students_map sm ON sm.shard_name='5434' AND sm.shard_stno = r.stno
   JOIN sections_map secmap ON secmap.shard_name='5434' AND secmap.shard_sec_no = r.sec_no
