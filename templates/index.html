@@ -16,6 +16,7 @@
                     max-height:200px; overflow:auto; display:none; width:100%;"></div>
                 <input type="hidden" id="stno">
                 <input type="hidden" id="student_display">
+                <input type="hidden" id="shard">
             </div>
             <div class="mb-3">
                 <label>Section ID:</label>
@@ -53,7 +54,8 @@
             const data = {
                 stno: document.getElementById('stno').value,
                 sec_no: document.getElementById('sec_no').value,
-                student_display: document.getElementById('student_display').value
+                student_display: document.getElementById('student_display').value,
+                shard: document.getElementById('shard').value || undefined
             };
             const res = await fetch('/register', {
                 method: 'POST',
@@ -105,15 +107,16 @@
                     const el = document.createElement('button');
                     el.type = 'button';
                     el.className = 'list-group-item list-group-item-action';
-                    el.textContent = it.display;
+                    el.textContent = it.display + (it.shard ? (' [shard '+it.shard+']') : '');
                     el.dataset.stno = it.stno;
+                    el.dataset.shard = it.shard || '';
                     el.addEventListener('click', () => {
                         input.value = it.display;
                         hiddenStno.value = it.stno;
                         document.getElementById('student_display').value = (it.display || '').replace(/ \(id=.*\)$/, '').trim();
+                        document.getElementById('shard').value = it.shard || '';
+                        loadSections(it.stno, it.shard);
                         suggestions.style.display='none';
-                        // load available sections for this student
-                        loadSections(it.stno);
                     });
                     suggestions.appendChild(el);
                 });
@@ -128,16 +131,18 @@
             }
         });
 
-        async function loadSections(stno) {
+    async function loadSections(stno, shard) {
             const sel = document.getElementById('sec_no');
             sel.innerHTML = '<option value="">-- Chọn section --</option>';
             try {
-                const res = await fetch('/sections/available/' + stno);
+        const url = '/sections/available/' + stno + (shard ? ('?shard=' + shard) : '');
+        const res = await fetch(url);
                 const items = await res.json();
                 if (!Array.isArray(items)) {
                     alert('Lỗi khi lấy danh sách section');
                     return;
                 }
+    // detectShard removed: backend now returns shard directly
                 items.forEach(s => {
                     const opt = document.createElement('option');
                     opt.value = s.sec_no;

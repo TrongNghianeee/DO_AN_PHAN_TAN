@@ -37,7 +37,7 @@ def find_student(stno=None, q=None, fullname=None):
                 if row:
                     # If fullname provided, disambiguate by matching combined name
                     combined = f"{row[1] or ''} {row[2] or ''} {row[3] or ''}".strip()
-                    entry = {'stno': row[0], 'fname': row[1], 'mname': row[2], 'lname': row[3], 'u_id': row[4], 'fullname': combined}
+                    entry = {'stno': row[0], 'fname': row[1], 'mname': row[2], 'lname': row[3], 'u_id': row[4], 'fullname': combined, 'shard': p}
                     if fullname:
                         if fullname.strip().lower() == combined.lower() or fullname.strip().lower() in combined.lower():
                             return entry
@@ -55,7 +55,7 @@ def find_student(stno=None, q=None, fullname=None):
                 rows = cur.fetchall()
                 for r in rows:
                     display = f"{r[1]} {r[2]} {r[3]} (id={r[0]})"
-                    results.append({'stno': r[0], 'display': display, 'u_id': r[4]})
+                    results.append({'stno': r[0], 'display': display, 'u_id': r[4], 'shard': p})
         except Exception:
             # ignore shard errors for search - return what we can
             pass
@@ -73,20 +73,22 @@ def find_student(stno=None, q=None, fullname=None):
 
 
 def _taken_sections_from_shards(shard_stno, year, semester, shard_hint=None):
-    """Collect sec_no already registered for this student (consider mapping master_stno)."""
+    """Chỉ thu thập các sec_no đã đăng ký của đúng student trên shard tương ứng + bản master.
+    Tránh quét cross-shard gây đụng id giống nhau."""
     taken = set()
     master_stno = None
-    # Try mapping (if mapping_method.sql executed)
+    # Tra mapping để lấy master_stno (nếu có)
     try:
         mconn = get_db_conn(5432)
         mcur = mconn.cursor()
         if shard_hint:
             mcur.execute("SELECT master_stno FROM students_map WHERE shard_name=%s AND shard_stno=%s", (str(shard_hint), shard_stno))
+            row = mcur.fetchone()
+            if row:
+                master_stno = row[0]
         else:
-            mcur.execute("SELECT master_stno FROM students_map WHERE shard_stno=%s LIMIT 1", (shard_stno,))
-        row = mcur.fetchone()
-        if row:
-            master_stno = row[0]
+            # Không có shard_hint thì bỏ qua mapping (tránh nhầm student khác shard)
+            master_stno = None
         if master_stno:
             mcur.execute(
                 "SELECT r.sec_no FROM registrations r JOIN sections s ON r.sec_no = s.sec_no WHERE r.stno = %s AND s.year = %s AND s.semester = %s",
@@ -102,38 +104,34 @@ def _taken_sections_from_shards(shard_stno, year, semester, shard_hint=None):
         except Exception:
             pass
 
-    # shards side (use provided shard_hint if any, else both)
-    shards = [int(shard_hint)] if shard_hint else [5433, 5434]
-    shard_sec_nos = set()
-    for p in shards:
+    # Lấy đăng ký trên đúng shard của student (chỉ shard_hint)
+    if shard_hint:
         try:
-            sconn = get_db_conn(p)
+            sconn = get_db_conn(int(shard_hint))
             scur = sconn.cursor()
             scur.execute("SELECT sec_no FROM registrations WHERE stno = %s", (shard_stno,))
-            for r in scur.fetchall():
-                shard_sec_nos.add(r[0])
+            shard_sec_nos = [row[0] for row in scur.fetchall()]
         except Exception:
-            pass
+            shard_sec_nos = []
         finally:
             try:
                 scur.close(); sconn.close()
             except Exception:
                 pass
-
-    if shard_sec_nos:
-        try:
-            mconn = get_db_conn(5432)
-            mcur = mconn.cursor()
-            mcur.execute("SELECT sec_no FROM sections WHERE sec_no = ANY(%s) AND year = %s AND semester = %s", (list(shard_sec_nos), year, semester))
-            for r in mcur.fetchall():
-                taken.add(r[0])
-        except Exception:
-            pass
-        finally:
+        if shard_sec_nos:
             try:
-                mcur.close(); mconn.close()
+                mconn = get_db_conn(5432)
+                mcur = mconn.cursor()
+                mcur.execute("SELECT sec_no FROM sections WHERE sec_no = ANY(%s) AND year = %s AND semester = %s", (list(shard_sec_nos), year, semester))
+                for r in mcur.fetchall():
+                    taken.add(r[0])
             except Exception:
                 pass
+            finally:
+                try:
+                    mcur.close(); mconn.close()
+                except Exception:
+                    pass
     return taken
 
 
@@ -274,12 +272,38 @@ def students():
 # Endpoint: available sections for a student in current term
 @app.route('/sections/available/<int:stno>', methods=['GET'])
 def available_sections(stno):
-    # find student
-    student = find_student(stno=stno)
-    if not student:
-        return jsonify({'error': 'Student not found'}), 404
+    shard_hint = request.args.get('shard')  # required if stno duplicated across shards
+    student = None
+    if shard_hint:
+        try:
+            shard_int = int(shard_hint)
+        except ValueError:
+            return jsonify({'error': 'Invalid shard'}), 400
+        if shard_int not in (5433, 5434):
+            return jsonify({'error': 'Unsupported shard'}), 400
+        # Query only that shard directly to avoid cross-shard confusion
+        try:
+            conn_s = get_db_conn(shard_int)
+            cur_s = conn_s.cursor()
+            cur_s.execute("SELECT stno, u_id FROM students WHERE stno = %s", (stno,))
+            row = cur_s.fetchone()
+            if row:
+                student = {'stno': row[0], 'u_id': row[1], 'shard': shard_int}
+        except Exception:
+            pass
+        finally:
+            try:
+                cur_s.close(); conn_s.close()
+            except Exception:
+                pass
+    else:
+        student = find_student(stno=stno)
+        if isinstance(student, list):
+            # ambiguous, need shard param
+            return jsonify({'error': 'Ambiguous stno across shards. Provide ?shard=5433 hoặc 5434', 'shards': [s.get('shard') for s in student if isinstance(s, dict)]}), 400
 
-    shard_hint = request.args.get('shard')  # optional shard hint to resolve mapping
+    if not student:
+        return jsonify({'error': 'Student not found on specified shard' if shard_hint else 'Student not found'}), 404
 
     term = get_current_term()
     if not term:
@@ -288,18 +312,20 @@ def available_sections(stno):
     year = term['year']
     semester = term['semester']
 
-    # gather taken sections from master and shards
+    # gather taken sections chỉ theo shard hiện tại
     taken = _taken_sections_from_shards(stno, year, semester, shard_hint=shard_hint)
 
-    # Query master for sections in the current term, exclude those the student already registered for
-    conn = get_db_conn(5432)
+    # Query SECTIONS FROM THE STUDENT'S SHARD (to ensure FK consistency) then optionally filter by group
+    target_port = 5433 if 1 <= student.get('u_id', 0) <= 10 else 5434
+    conn = get_db_conn(target_port)
     try:
         cur = conn.cursor()
         cur.execute(
             """
             SELECT s.sec_no, s.c_no, c.c_name, s.capacity,
                    (SELECT COUNT(*) FROM registrations r2 WHERE r2.sec_no = s.sec_no) AS enrolled,
-                   i.name as instructor
+                   i.name as instructor,
+                   i.u_id as ins_uid
             FROM sections s
             LEFT JOIN courses c ON s.c_no = c.c_no
             LEFT JOIN instructors i ON s.ins_id = i.ins_id
@@ -311,19 +337,30 @@ def available_sections(stno):
         rows = cur.fetchall()
         out = []
         for r in rows:
-            sec_no, c_no, c_name, capacity, enrolled, instructor = r
+            sec_no, c_no, c_name, capacity, enrolled, instructor, ins_uid = r
             if sec_no in taken:
                 continue
-            if enrolled is None:
-                enrolled = 0
+            # Optional: filter by exact university of instructor matching student's university if desired
+            # if ins_uid != student.get('u_id'): continue  # Uncomment to enforce same university only
+            enrolled = enrolled or 0
             if capacity is not None and enrolled >= capacity:
                 continue
-            out.append({'sec_no': sec_no, 'course_no': c_no, 'course_name': c_name, 'capacity': capacity, 'enrolled': enrolled, 'instructor': instructor})
+            out.append({
+                'sec_no': sec_no,
+                'course_no': c_no,
+                'course_name': c_name,
+                'capacity': capacity,
+                'enrolled': enrolled,
+                'instructor': instructor
+            })
         return jsonify(out)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     finally:
-        conn.close()
+        try:
+            cur.close(); conn.close()
+        except Exception:
+            pass
 
  # Manual sync endpoint (POST /sync) to trigger mapping-based registration sync
 @app.route('/sync', methods=['POST'])
