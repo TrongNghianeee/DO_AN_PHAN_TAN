@@ -11,16 +11,19 @@
         <form id="regForm">
             <div class="mb-3">
                 <label>Student ID:</label>
-                <input type="number" class="form-control" id="stno" required>
+                <input type="text" class="form-control" id="student_input" placeholder="Gõ id hoặc tên để tìm..." autocomplete="off" required>
+                <div id="student_suggestions" class="list-group" style="position: absolute; z-index:1000;
+                    max-height:200px; overflow:auto; display:none; width:100%;"></div>
+                <input type="hidden" id="stno">
+                <input type="hidden" id="student_display">
             </div>
             <div class="mb-3">
                 <label>Section ID:</label>
-                <input type="number" class="form-control" id="sec_no" required>
+                <select class="form-select" id="sec_no" required>
+                    <option value="">-- Chọn section --</option>
+                </select>
             </div>
-            <div class="mb-3">
-                <label>University ID:</label>
-                <input type="number" class="form-control" id="u_id" required>
-            </div>
+            <!-- u_id removed: determined automatically -->
             <button type="submit" class="btn btn-primary">Đăng Ký</button>
             <button type="button" id="btnList" class="btn btn-secondary ms-2">Xem Danh Sách</button>
         </form>
@@ -44,13 +47,13 @@
     </div>
 
     <script>
-        // Submit form đăng ký
+        // Submit form đăng ký - u_id is auto-detected by server
         document.getElementById('regForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             const data = {
                 stno: document.getElementById('stno').value,
                 sec_no: document.getElementById('sec_no').value,
-                u_id: document.getElementById('u_id').value
+                student_display: document.getElementById('student_display').value
             };
             const res = await fetch('/register', {
                 method: 'POST',
@@ -81,6 +84,70 @@
                 tbody.appendChild(tr);
             });
         });
+    </script>
+    <script>
+        // Autocomplete students
+        const input = document.getElementById('student_input');
+        const suggestions = document.getElementById('student_suggestions');
+        const hiddenStno = document.getElementById('stno');
+
+        let debounceTimer;
+        input.addEventListener('input', (e) => {
+            const q = e.target.value.trim();
+            clearTimeout(debounceTimer);
+            if (!q) { suggestions.style.display='none'; return; }
+            debounceTimer = setTimeout(async () => {
+                const res = await fetch('/students?q=' + encodeURIComponent(q));
+                const items = await res.json();
+                suggestions.innerHTML = '';
+                if (!items || items.length === 0) { suggestions.style.display='none'; return; }
+                items.forEach(it => {
+                    const el = document.createElement('button');
+                    el.type = 'button';
+                    el.className = 'list-group-item list-group-item-action';
+                    el.textContent = it.display;
+                    el.dataset.stno = it.stno;
+                    el.addEventListener('click', () => {
+                        input.value = it.display;
+                        hiddenStno.value = it.stno;
+                        document.getElementById('student_display').value = (it.display || '').replace(/ \(id=.*\)$/, '').trim();
+                        suggestions.style.display='none';
+                        // load available sections for this student
+                        loadSections(it.stno);
+                    });
+                    suggestions.appendChild(el);
+                });
+                suggestions.style.display = 'block';
+            }, 250);
+        });
+
+        // click outside to hide suggestions
+        document.addEventListener('click', (e) => {
+            if (!suggestions.contains(e.target) && e.target !== input) {
+                suggestions.style.display = 'none';
+            }
+        });
+
+        async function loadSections(stno) {
+            const sel = document.getElementById('sec_no');
+            sel.innerHTML = '<option value="">-- Chọn section --</option>';
+            try {
+                const res = await fetch('/sections/available/' + stno);
+                const items = await res.json();
+                if (!Array.isArray(items)) {
+                    alert('Lỗi khi lấy danh sách section');
+                    return;
+                }
+                items.forEach(s => {
+                    const opt = document.createElement('option');
+                    opt.value = s.sec_no;
+                    opt.textContent = `${s.sec_no} — ${s.course_name} (enrolled ${s.enrolled}/${s.capacity || '∞'}) — ${s.instructor || 'TBA'}`;
+                    sel.appendChild(opt);
+                });
+            } catch (err) {
+                console.error(err);
+            }
+        }
     </script>
 </body>
 </html>
